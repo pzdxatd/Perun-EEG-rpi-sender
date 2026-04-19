@@ -78,6 +78,10 @@ echo "[1/9] Installing packages..."
 sudo apt-get update -qq
 sudo apt-get install -y -qq g++ make libftdi1-dev python3-pip python3-numpy
 sudo pip3 install python-osc --break-system-packages 2>/dev/null || sudo pip3 install python-osc
+
+# Make journald persistent so `journalctl -u eeg-streamer -b -1` survives reboots
+sudo mkdir -p /var/log/journal
+sudo systemd-tmpfiles --create --prefix /var/log/journal 2>/dev/null || true
 echo "  Done."
 
 # ---- 2. Set hostname ----
@@ -89,25 +93,48 @@ else
     echo "[2/9] Hostname: keeping $(hostname)"
 fi
 
-# ---- 3. Static IP ----
-echo "[3/9] Setting static IP ${STATIC_IP}..."
-CON_NAME=$(nmcli -t -f NAME,TYPE con show | grep wireless | head -1 | cut -d: -f1)
-if [ -z "$CON_NAME" ]; then
-    echo "  WARNING: No wireless connection found, skipping static IP."
+# ---- 3. Create / update WiFi connection ----
+echo "[3/9] Configuring WiFi + static IP..."
+if [ -z "$WIFI_SSID" ]; then
+    echo "  No wifi_ssid in config.ini; skipping WiFi setup (service will fail to reach PC)."
 else
+    # Reuse a connection that already targets this SSID if one exists; otherwise create it.
+    CON_NAME=$(nmcli -t -f NAME,TYPE,UUID con show \
+        | awk -F: '$2 ~ /wireless/ {print $1}' \
+        | while read n; do
+              ssid=$(nmcli -t -f 802-11-wireless.ssid con show "$n" 2>/dev/null | cut -d: -f2)
+              [ "$ssid" = "$WIFI_SSID" ] && echo "$n" && break
+          done | head -1)
+
+    if [ -z "$CON_NAME" ]; then
+        CON_NAME="perun-wifi"
+        echo "  Creating new NetworkManager connection '${CON_NAME}' for SSID '${WIFI_SSID}'"
+        sudo nmcli con delete "$CON_NAME" 2>/dev/null || true
+        sudo nmcli con add type wifi ifname wlan0 con-name "$CON_NAME" ssid "$WIFI_SSID"
+        sudo nmcli con mod "$CON_NAME" wifi-sec.key-mgmt wpa-psk
+        sudo nmcli con mod "$CON_NAME" wifi-sec.psk "$WIFI_PSK"
+    else
+        echo "  Reusing existing connection '${CON_NAME}'"
+        sudo nmcli con mod "$CON_NAME" wifi-sec.key-mgmt wpa-psk
+        sudo nmcli con mod "$CON_NAME" wifi-sec.psk "$WIFI_PSK"
+    fi
+
     sudo nmcli con mod "$CON_NAME" ipv4.addresses "${STATIC_IP}/24"
     sudo nmcli con mod "$CON_NAME" ipv4.gateway "${GATEWAY}"
     sudo nmcli con mod "$CON_NAME" ipv4.dns "${GATEWAY} 8.8.8.8"
     sudo nmcli con mod "$CON_NAME" ipv4.method manual
-    echo "  Set on connection: ${CON_NAME}"
+    sudo nmcli con mod "$CON_NAME" connection.autoconnect yes
+    sudo nmcli con mod "$CON_NAME" connection.autoconnect-priority 100
+
+    # Try to bring it up now so we can see failures during setup instead of after reboot.
+    sudo nmcli con up "$CON_NAME" || echo "  WARNING: could not bring up ${CON_NAME} now (will retry on reboot)"
+    echo "  Done."
 fi
 
-# ---- 4. Connect WiFi (if SSID provided) ----
-if [ -n "$WIFI_SSID" ]; then
-    echo "[4/9] WiFi configured for SSID: ${WIFI_SSID}"
-else
-    echo "[4/9] WiFi: no SSID in config, skipping."
-fi
+# ---- 4. Verify WiFi state ----
+echo "[4/9] Verifying WiFi state..."
+nmcli -t -f NAME,DEVICE,STATE con show --active || true
+ip -4 addr show wlan0 2>/dev/null | grep -E "inet " || echo "  (no IPv4 on wlan0 yet — will apply after reboot)"
 
 # ---- 5. Disable GUI ----
 echo "[5/9] Disabling graphical interface..."
