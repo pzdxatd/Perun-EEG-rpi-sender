@@ -22,13 +22,26 @@ CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.ini")
 cfg = configparser.ConfigParser()
 cfg.read(CONFIG_PATH)
 
-DEVICE_NUM   = cfg.getint("device", "number")
-DEVICE_TYPE  = cfg.get("device", "type", fallback="perun8")
-USB_INDEX    = cfg.getint("device", "usb_index", fallback=0)
 
-PC_IP        = cfg.get("osc", "pc_ip")
-OSC_PORT     = cfg.getint("osc", "port", fallback=0) or (7880 + DEVICE_NUM)
-OSC_FPS      = cfg.getint("osc", "fps", fallback=15)
+def cfg_int(section, key, default):
+    """getint() that treats blank or missing values as default (configparser.getint
+    raises ValueError on empty strings even with fallback set)."""
+    raw = cfg.get(section, key, fallback="").strip()
+    return int(raw) if raw else default
+
+
+def cfg_float(section, key, default):
+    raw = cfg.get(section, key, fallback="").strip()
+    return float(raw) if raw else default
+
+
+DEVICE_NUM   = cfg_int("device", "number", 1)
+DEVICE_TYPE  = cfg.get("device", "type", fallback="perun8").strip()
+USB_INDEX    = cfg_int("device", "usb_index", 0)
+
+PC_IP        = cfg.get("osc", "pc_ip").strip()
+OSC_PORT     = cfg_int("osc", "port", 0) or (7880 + DEVICE_NUM)
+OSC_FPS      = cfg_int("osc", "fps", 15)
 
 # Simulation mode: emit synthetic band powers instead of reading from FTDI.
 # Triggered by [device] sim=true in config.ini, PERUN_SIM=1 env var, or --sim arg.
@@ -38,8 +51,8 @@ SIM_MODE     = (
     or "--sim" in sys.argv
 )
 
-SAMPLE_RATE  = cfg.getint("processing", "sample_rate", fallback=500)
-FFT_WINDOW   = cfg.getfloat("processing", "fft_window", fallback=1.0)
+SAMPLE_RATE  = cfg_int("processing", "sample_rate", 500)
+FFT_WINDOW   = cfg_float("processing", "fft_window", 1.0)
 WINDOW_SAMPLES = int(SAMPLE_RATE * FFT_WINDOW)
 
 # Parse channels
