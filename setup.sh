@@ -21,9 +21,15 @@ if [ ! -f "$CONFIG" ]; then
 fi
 
 # ---- INI parser ----
+# Strip CRLF too, so Windows-edited config.ini doesn't poison values (hostname etc.)
 ini_get() {
     local section=$1 key=$2
-    sed -n "/^\[${section}\]/,/^\[/p" "$CONFIG" | grep "^${key} *=" | head -1 | cut -d= -f2- | sed 's/^ *//;s/ *$//'
+    sed -n "/^\[${section}\]/,/^\[/p" "$CONFIG" \
+        | grep "^${key} *=" \
+        | head -1 \
+        | cut -d= -f2- \
+        | tr -d '\r' \
+        | sed 's/^ *//;s/ *$//'
 }
 
 # ---- Read config ----
