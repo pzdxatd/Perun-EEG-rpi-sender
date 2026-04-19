@@ -5,7 +5,9 @@ All settings are read from config.ini at startup.
 """
 
 import configparser
+import math
 import os
+import random
 import subprocess
 import sys
 import time
@@ -27,6 +29,14 @@ USB_INDEX    = cfg.getint("device", "usb_index", fallback=0)
 PC_IP        = cfg.get("osc", "pc_ip")
 OSC_PORT     = cfg.getint("osc", "port", fallback=0) or (7880 + DEVICE_NUM)
 OSC_FPS      = cfg.getint("osc", "fps", fallback=15)
+
+# Simulation mode: emit synthetic band powers instead of reading from FTDI.
+# Triggered by [device] sim=true in config.ini, PERUN_SIM=1 env var, or --sim arg.
+SIM_MODE     = (
+    cfg.getboolean("device", "sim", fallback=False)
+    or os.environ.get("PERUN_SIM", "0") == "1"
+    or "--sim" in sys.argv
+)
 
 SAMPLE_RATE  = cfg.getint("processing", "sample_rate", fallback=500)
 FFT_WINDOW   = cfg.getfloat("processing", "fft_window", fallback=1.0)
@@ -82,6 +92,31 @@ def compute_band_powers(buffer, fs):
     return powers
 
 
+def run_sim(osc):
+    """Emit smooth synthetic band powers so pipeline can be tested without FTDI."""
+    print("SIM MODE: no perun_reader, emitting synthetic band powers.")
+    phases = {name: random.random() * math.tau for name in ("theta", "alpha", "beta", "gamma")}
+    speeds = {"theta": 0.11, "alpha": 0.17, "beta": 0.23, "gamma": 0.29}
+    interval = 1.0 / OSC_FPS
+    t0 = time.time()
+    frame = 0
+    while True:
+        now = time.time()
+        t = now - t0
+        powers = {}
+        for name, ph in phases.items():
+            # Low-freq sine in [0,100] with slight noise so TD sees something moving.
+            v = 50.0 + 40.0 * math.sin(ph + t * speeds[name])
+            v += random.uniform(-3.0, 3.0)
+            powers[name] = max(0.0, min(100.0, v))
+            osc.send_message(f"/eeg/{DEVICE_NUM}/{name}", powers[name])
+        frame += 1
+        if frame % (OSC_FPS * 5) == 0:
+            print(f"[sim {t:.0f}s] t:{powers['theta']:.1f} a:{powers['alpha']:.1f} "
+                  f"b:{powers['beta']:.1f} g:{powers['gamma']:.1f}")
+        time.sleep(max(0.0, interval - (time.time() - now)))
+
+
 def main():
     print(f"EEG OSC Streamer - Device #{DEVICE_NUM} ({DEVICE_TYPE})")
     print(f"Sending to {PC_IP}:{OSC_PORT} at ~{OSC_FPS} fps")
@@ -90,6 +125,13 @@ def main():
     print(f"Bands: {', '.join(f'{k} {v[0]}-{v[1]}Hz' for k, v in BANDS.items())}")
 
     osc = udp_client.SimpleUDPClient(PC_IP, OSC_PORT)
+
+    if SIM_MODE:
+        try:
+            run_sim(osc)
+        except KeyboardInterrupt:
+            print("\nStopping sim.")
+        return
 
     reader_path = os.path.join(SCRIPT_DIR, "perun_reader")
     print(f"Starting {reader_path} (usb_index={USB_INDEX})...")
